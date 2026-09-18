@@ -1,0 +1,5 @@
+# Promotion and production-facing files need a release-manager review.
+.github/workflows/   @your-org/release-managers
+scripts/             @your-org/release-managers
+force-app/main/default/profiles/          @your-org/salesforce-admins
+force-app/main/default/permissionsets/    @your-org/salesforce-admins

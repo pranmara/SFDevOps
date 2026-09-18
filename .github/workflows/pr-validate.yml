@@ -1,0 +1,159 @@
+# =============================================================================
+# PR checks for pull requests targeting master.
+#
+# Org validation is done by Gearset: each CI job (Partial, UAT, Production
+# validate-only) has "validate pull requests" enabled and reports its own status
+# check on the PR. This workflow adds what Gearset does not show:
+#
+#   1. The exact delta (package.xml + destructiveChanges.xml) the merge will
+#      deploy, as an artifact and in the PR comment. Deletions are flagged.
+#   2. Static analysis (Salesforce Code Analyzer) on the changed files only.
+#   3. Optional Salesforce CLI check-only validation against one org, when the
+#      repo variable PR_SF_VALIDATE_ENV names a GitHub Environment
+#      (partial | uat | production-validate). Leave it empty when Gearset
+#      already validates PRs, to avoid double validations.
+# =============================================================================
+name: PR checks
+
+on:
+  pull_request:
+    branches: [master, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  SF_DISABLE_TELEMETRY: "true"
+  SF_AUTOUPDATE_DISABLE: "true"
+
+jobs:
+  delta:
+    name: Delta package
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.delta.outputs.has_changes }}
+      has_destructive: ${{ steps.check.outputs.has_destructive }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Salesforce CLI and sfdx-git-delta
+        run: |
+          npm install -g "@salesforce/cli@${{ vars.SF_CLI_VERSION || 'latest' }}"
+          echo y | sf plugins install "sfdx-git-delta@${{ vars.SGD_VERSION || 'latest' }}"
+      - name: Build the delta this PR would deploy
+        id: delta
+        run: |
+          bash scripts/sf-delta.sh \
+            --from "${{ github.event.pull_request.base.sha }}" \
+            --to "${{ github.event.pull_request.head.sha }}" --merge-base --out delta
+      - name: Flag destructive changes
+        id: check
+        run: |
+          if grep -q "<types>" delta/destructiveChanges/destructiveChanges.xml 2>/dev/null; then
+            echo "has_destructive=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::This PR deletes metadata. Review delta/destructiveChanges/destructiveChanges.xml in the artifact."
+          else
+            echo "has_destructive=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.delta.outputs.has_changes == 'true'
+        with:
+          name: delta-pr-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: delta
+          retention-days: 30
+
+  code-scan:
+    name: Static analysis (advisory)
+    needs: delta
+    if: needs.delta.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta-pr-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: delta
+      - name: Install Salesforce CLI and Code Analyzer
+        run: |
+          npm install -g "@salesforce/cli@${{ vars.SF_CLI_VERSION || 'latest' }}"
+          echo y | sf plugins install code-analyzer
+      - name: Scan changed files only
+        run: |
+          if [ ! -d delta/force-app ]; then echo "No source files changed"; exit 0; fi
+          sf code-analyzer run --workspace delta/force-app \
+            --output-file code-analyzer.html --output-file code-analyzer.json \
+            --severity-threshold 2
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: code-analyzer-pr-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: code-analyzer.*
+          if-no-files-found: ignore
+
+  sf-validate:
+    name: Salesforce CLI validation (optional)
+    needs: delta
+    if: needs.delta.outputs.has_changes == 'true' && vars.PR_SF_VALIDATE_ENV != ''
+    uses: ./.github/workflows/_sf-deploy.yml
+    secrets: inherit
+    with:
+      environment: ${{ vars.PR_SF_VALIDATE_ENV }}
+      mode: validate
+      from_ref: ${{ github.event.pull_request.base.sha }}
+      to_ref: ${{ github.event.pull_request.head.sha }}
+      merge_base: true
+      test_level: ${{ vars.PROD_TEST_LEVEL || 'RunLocalTests' }}
+
+  comment:
+    name: PR comment
+    needs: [delta, code-scan, sf-validate]
+    if: always() && needs.delta.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          HAS_CHANGES: ${{ needs.delta.outputs.has_changes }}
+          HAS_DESTRUCTIVE: ${{ needs.delta.outputs.has_destructive }}
+          SCAN: ${{ needs.code-scan.result }}
+          SFV: ${{ needs.sf-validate.result }}
+          SFV_ENV: ${{ vars.PR_SF_VALIDATE_ENV }}
+          SFV_JOB: ${{ needs.sf-validate.outputs.job_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          icon() { case "$1" in success) echo ":white_check_mark:";; failure) echo ":x:";; skipped) echo ":fast_forward:";; *) echo ":grey_question:";; esac; }
+          DESTRUCTIVE_LINE=""
+          if [ "$HAS_DESTRUCTIVE" = "true" ]; then DESTRUCTIVE_LINE="> :warning: **This PR deletes metadata.** Check \`destructiveChanges.xml\` in the delta artifact before merging."; fi
+          SFV_LINE="| Salesforce CLI validation | $(icon "$SFV") $SFV |"
+          if [ -n "$SFV_ENV" ]; then SFV_LINE="| Salesforce CLI validation against \`$SFV_ENV\` | $(icon "$SFV") $SFV${SFV_JOB:+ (job \`$SFV_JOB\`)} |"; fi
+          BODY="### Salesforce PR checks
+          | Check | Result |
+          |---|---|
+          | Delta package built (metadata changed: \`$HAS_CHANGES\`) | :white_check_mark: [artifact]($RUN_URL) |
+          | Static analysis (advisory) | $(icon "$SCAN") $SCAN |
+          $SFV_LINE
+
+          $DESTRUCTIVE_LINE
+
+          Org validations (Partial, UAT, Production validate-only) are reported by Gearset as status checks on this PR.
+          <!-- sf-ci-comment -->"
+          CID=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+                  --jq '[.[] | select(.body | contains("<!-- sf-ci-comment -->"))] | .[0].id // empty')
+          if [ -n "$CID" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$CID" -f body="$BODY" >/dev/null
+          else
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+          fi

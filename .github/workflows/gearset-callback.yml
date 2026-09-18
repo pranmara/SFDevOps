@@ -1,0 +1,84 @@
+# =============================================================================
+# Receives Gearset "outgoing webhook" events relayed as GitHub repository_dispatch.
+#
+# In EACH Gearset CI job (Partial, UAT, Production validate-only) add two
+# outgoing webhooks pointing at
+#   https://api.github.com/repos/<owner>/<repo>/dispatches
+# with headers  Accept: application/vnd.github+json
+#               Authorization: Bearer <fine-grained PAT, contents:write, issues:write>
+# and custom payloads:
+#   on success -> {"event_type":"gearset-ci-succeeded","client_payload":{"job":"<job name>","commit":"${SOURCE_COMMIT_ID}"}}
+#   on failure -> {"event_type":"gearset-ci-failed","client_payload":{"job":"<job name>","commit":"${SOURCE_COMMIT_ID}"}}
+# (details in docs/02-gearset-integration.md)
+#
+# What it does:
+#   deploy job succeeded      -> move the tag deployed/<env> (used by Rollback)
+#   validate-only succeeded   -> summary only (nothing was deployed)
+#   any job failed            -> open a GitHub issue labelled deployment-failure
+#
+# Only needed when DEPLOY_ENGINE = gearset-auto (Gearset triggers itself and
+# GitHub Actions would otherwise never learn the result).
+# =============================================================================
+name: Gearset callback
+
+on:
+  repository_dispatch:
+    types: [gearset-ci-succeeded, gearset-ci-failed]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    env:
+      EVENT: ${{ github.event.action }}
+      JOB: ${{ github.event.client_payload.job }}
+      COMMIT: ${{ github.event.client_payload.commit }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Map the CI job name to an environment
+        id: map
+        env:
+          PARTIAL_JOB: ${{ vars.GEARSET_PARTIAL_JOB_NAME }}
+          UAT_JOB: ${{ vars.GEARSET_UAT_JOB_NAME }}
+          PROD_VALIDATE_JOB: ${{ vars.GEARSET_PROD_VALIDATE_JOB_NAME }}
+        run: |
+          ENV=""; KIND=""
+          if [ -n "$PARTIAL_JOB" ]       && [ "$JOB" = "$PARTIAL_JOB" ];       then ENV=partial;    KIND=deploy; fi
+          if [ -n "$UAT_JOB" ]           && [ "$JOB" = "$UAT_JOB" ];           then ENV=uat;        KIND=deploy; fi
+          if [ -n "$PROD_VALIDATE_JOB" ] && [ "$JOB" = "$PROD_VALIDATE_JOB" ]; then ENV=production; KIND=validate; fi
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
+          echo "Gearset job '$JOB' ($EVENT) commit=${COMMIT:-?} -> ${ENV:-unknown environment} (${KIND:-unknown kind})"
+
+      - name: Record successful deployment
+        if: env.EVENT == 'gearset-ci-succeeded' && steps.map.outputs.kind == 'deploy' && env.COMMIT != ''
+        run: |
+          git tag -f "deployed/${{ steps.map.outputs.environment }}" "$COMMIT"
+          git push -f origin "refs/tags/deployed/${{ steps.map.outputs.environment }}"
+          echo "### :white_check_mark: Gearset deployed \`$COMMIT\` to ${{ steps.map.outputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record successful Production validation
+        if: env.EVENT == 'gearset-ci-succeeded' && steps.map.outputs.kind == 'validate'
+        run: |
+          echo "### :white_check_mark: master \`${COMMIT:-?}\` validated against Production (nothing deployed)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploy from Gearset when UAT signs off, then move the marker: git tag -f deployed/production $COMMIT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open an issue for the failed run
+        if: env.EVENT == 'gearset-ci-failed'
+        run: |
+          gh label create deployment-failure --color B60205 --description "A Gearset CI job failed" >/dev/null 2>&1 || true
+          gh issue create --label deployment-failure \
+            --title "Gearset CI job '$JOB' failed${COMMIT:+ at $COMMIT}" \
+            --body "Gearset reported a failed run of **$JOB**${COMMIT:+ for commit \`$COMMIT\`}.
+
+          1. Open the run in Gearset > Continuous integration > job history for component and test errors.
+          2. Fix forward with a new PR to master, or roll back with the *Rollback* workflow (docs/03-error-handling-and-rollback.md).
+          3. Close this issue when the job is green again."
+          echo "### :x: Gearset job '$JOB' failed - issue opened" >> "$GITHUB_STEP_SUMMARY"

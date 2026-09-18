@@ -1,0 +1,11 @@
+# Never deploy these from git
+package.xml
+**/jsconfig.json
+**/.eslintrc.json
+**/__tests__/**
+# Org-specific / environment-specific metadata that must not travel between orgs
+**/settings/*.settings-meta.xml
+**/profiles/Admin.profile-meta.xml
+**/namedCredentials/**
+**/remoteSiteSettings/**
+**/connectedApps/**

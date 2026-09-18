@@ -1,0 +1,135 @@
+# =============================================================================
+# After a PR is merged to master:
+#   Partial sandbox  <- deploy
+#   UAT sandbox      <- deploy
+#   Production       <- validate only (the real deployment is done by a release
+#                       manager in Gearset once UAT signs off)
+#
+# Who does the work is chosen by the repo variable DEPLOY_ENGINE:
+#
+#   gearset-auto (default)  The three Gearset CI jobs on master run themselves
+#                           from Gearset's GitHub webhook. This workflow does
+#                           NOTHING (every job is skipped). Keep it only if you
+#                           may switch engines later; otherwise delete it.
+#   gearset-api             This workflow starts the three CI jobs through the
+#                           Gearset Automation API, in order Partial -> UAT ->
+#                           Production validation, and fails fast. Turn OFF the
+#                           jobs' own "run on commit" trigger, or they run twice.
+#   sf                      Salesforce CLI does the same three steps with
+#                           incremental (sfdx-git-delta) deployments. Gearset is
+#                           not involved for sandboxes.
+#
+# After each successful DEPLOY the tag deployed/<env> is moved to the merged
+# commit (the Rollback workflow relies on it).
+# =============================================================================
+name: Deploy on merge
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      from_ref:
+        description: (sf engine only) override the base ref of the delta; default = tag deployed/<env>
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-master
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------ Gearset API
+  partial-gearset:
+    name: Partial (Gearset CI job)
+    if: vars.DEPLOY_ENGINE == 'gearset-api'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the "master -> Partial" CI job and wait
+        env:
+          GEARSET_API_TOKEN: ${{ secrets.GEARSET_API_TOKEN }}
+          GEARSET_CI_JOB_ID: ${{ secrets.GEARSET_PARTIAL_CI_JOB_ID }}
+        run: bash scripts/gearset-run.sh
+      - name: Move deployment marker deployed/partial
+        run: |
+          git tag -f deployed/partial "${{ github.sha }}"
+          git push -f origin refs/tags/deployed/partial
+
+  uat-gearset:
+    name: UAT (Gearset CI job)
+    needs: partial-gearset
+    if: vars.DEPLOY_ENGINE == 'gearset-api'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the "master -> UAT" CI job and wait
+        env:
+          GEARSET_API_TOKEN: ${{ secrets.GEARSET_API_TOKEN }}
+          GEARSET_CI_JOB_ID: ${{ secrets.GEARSET_UAT_CI_JOB_ID }}
+        run: bash scripts/gearset-run.sh
+      - name: Move deployment marker deployed/uat
+        run: |
+          git tag -f deployed/uat "${{ github.sha }}"
+          git push -f origin refs/tags/deployed/uat
+
+  production-validate-gearset:
+    name: Production validation (Gearset CI job, validate only)
+    needs: uat-gearset
+    if: vars.DEPLOY_ENGINE == 'gearset-api'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the "master -> Production (validate only)" CI job and wait
+        env:
+          GEARSET_API_TOKEN: ${{ secrets.GEARSET_API_TOKEN }}
+          GEARSET_CI_JOB_ID: ${{ secrets.GEARSET_PROD_VALIDATE_CI_JOB_ID }}
+          GEARSET_TIMEOUT_MIN: "120"
+        run: bash scripts/gearset-run.sh
+      - name: Summary
+        run: |
+          echo "### :white_check_mark: master \`${GITHUB_SHA::7}\` is deployable to Production" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploy it from Gearset (Compare and deploy: master -> Production) once UAT signs off, then move the marker: \`git tag -f deployed/production ${GITHUB_SHA::7} && git push -f origin refs/tags/deployed/production\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------ Salesforce CLI
+  partial-sf:
+    name: Partial (Salesforce CLI)
+    if: vars.DEPLOY_ENGINE == 'sf'
+    uses: ./.github/workflows/_sf-deploy.yml
+    secrets: inherit
+    with:
+      environment: partial
+      mode: deploy
+      from_ref: ${{ inputs.from_ref || '' }}
+      to_ref: ${{ github.sha }}
+      test_level: ${{ vars.PARTIAL_TEST_LEVEL || 'NoTestRun' }}
+
+  uat-sf:
+    name: UAT (Salesforce CLI)
+    needs: partial-sf
+    if: vars.DEPLOY_ENGINE == 'sf'
+    uses: ./.github/workflows/_sf-deploy.yml
+    secrets: inherit
+    with:
+      environment: uat
+      mode: deploy
+      from_ref: ${{ inputs.from_ref || '' }}
+      to_ref: ${{ github.sha }}
+      test_level: ${{ vars.UAT_TEST_LEVEL || 'RunLocalTests' }}
+
+  production-validate-sf:
+    name: Production validation (Salesforce CLI, check only)
+    needs: uat-sf
+    if: vars.DEPLOY_ENGINE == 'sf'
+    uses: ./.github/workflows/_sf-deploy.yml
+    secrets: inherit
+    with:
+      environment: production-validate
+      mode: validate
+      # validate everything not yet in Production, not just this merge
+      from_ref: refs/tags/deployed/production
+      to_ref: ${{ github.sha }}
+      test_level: ${{ vars.PROD_TEST_LEVEL || 'RunLocalTests' }}

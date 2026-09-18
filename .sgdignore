@@ -1,0 +1,4 @@
+# sfdx-git-delta ignore (gitignore syntax). Changes to these files never enter a delta package.
+force-app/main/default/settings/**
+force-app/main/default/profiles/Admin.profile-meta.xml
+**/*.md

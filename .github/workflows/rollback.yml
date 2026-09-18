@@ -1,0 +1,135 @@
+# =============================================================================
+# Roll an org back to a known-good commit.
+#
+# 1. Deploys the REVERSE delta (bad -> good): restores changed components and
+#    deletes components the bad commit added (destructiveChanges).
+# 2. Moves the deployed/<env> marker back to the good commit.
+# 3. Opens a PR against master that restores the same files in git, so the org
+#    and the branch stay aligned (otherwise the next deploy re-applies the bad
+#    change). Because Partial and UAT both follow master, merging that PR
+#    rolls the OTHER sandbox back too, through the normal deploy on merge.
+#
+# For Production prefer Gearset's own rollback (deployment history > Roll back)
+# and then merge the revert PR; use this workflow for Production only when
+# DEPLOY_ENGINE = sf. Run with validate_only=true first. Production requires
+# environment approval.
+# Things git CANNOT roll back: data, deleted field values, Flow activation
+# state, picklist value deactivation, profile/permission removals in orgs where
+# users already depend on them. See docs/03-error-handling-and-rollback.md.
+# =============================================================================
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [partial, uat, production]
+        required: true
+      good_ref:
+        description: Known-good commit sha / tag (e.g. the previous deployed/<env> position)
+        required: true
+      bad_ref:
+        description: Commit currently in the org (default = tag deployed/<env>)
+        required: false
+        default: ""
+      validate_only:
+        description: Check-only run (no changes to the org)
+        type: boolean
+        default: true
+      open_revert_pr:
+        description: Open a PR restoring the good state on the environment branch
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sf-${{ inputs.environment }}-deploy
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: Rollback ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      SF_DISABLE_TELEMETRY: "true"
+      SF_AUTOUPDATE_DISABLE: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Salesforce CLI and sfdx-git-delta
+        run: |
+          npm install -g "@salesforce/cli@${{ vars.SF_CLI_VERSION || 'latest' }}"
+          echo y | sf plugins install "sfdx-git-delta@${{ vars.SGD_VERSION || 'latest' }}"
+      - name: Authenticate
+        env:
+          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+        run: |
+          printf '%s' "$SFDX_AUTH_URL" > "$RUNNER_TEMP/auth.txt"
+          sf org login sfdx-url --sfdx-url-file "$RUNNER_TEMP/auth.txt" --alias target --set-default
+          rm -f "$RUNNER_TEMP/auth.txt"
+
+      - name: Resolve refs
+        id: refs
+        run: |
+          BAD="${{ inputs.bad_ref }}"
+          if [ -z "$BAD" ]; then BAD="refs/tags/deployed/${{ inputs.environment }}"; fi
+          git rev-parse -q --verify "$BAD^{commit}" >/dev/null || { echo "::error::bad ref '$BAD' not found"; exit 1; }
+          git rev-parse -q --verify "${{ inputs.good_ref }}^{commit}" >/dev/null || { echo "::error::good ref not found"; exit 1; }
+          echo "bad=$(git rev-parse "$BAD")" >> "$GITHUB_OUTPUT"
+          echo "good=$(git rev-parse "${{ inputs.good_ref }}")" >> "$GITHUB_OUTPUT"
+          echo "Rolling back ${{ inputs.environment }}: $(git rev-parse --short "$BAD") -> $(git rev-parse --short "${{ inputs.good_ref }}")"
+
+      - name: Reverse delta ${{ inputs.validate_only && '(validate only)' || '(DEPLOY)' }}
+        run: |
+          bash scripts/rollback.sh --org target \
+            --good "${{ steps.refs.outputs.good }}" --bad "${{ steps.refs.outputs.bad }}" \
+            --test-level "${{ inputs.environment == 'partial' && (vars.PARTIAL_TEST_LEVEL || 'NoTestRun') || 'RunLocalTests' }}" \
+            ${{ inputs.validate_only && '--validate-only' || '' }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rollback-delta-${{ inputs.environment }}-${{ github.run_id }}
+          path: rollback-delta
+
+      - name: Move deployment marker back to the good commit
+        if: ${{ !inputs.validate_only }}
+        run: |
+          git tag -f "deployed/${{ inputs.environment }}" "${{ steps.refs.outputs.good }}"
+          git push -f origin "refs/tags/deployed/${{ inputs.environment }}"
+
+      - name: Open PR restoring the good state in git
+        if: ${{ !inputs.validate_only && inputs.open_revert_pr }}
+        env:
+          # A PAT makes the revert PR trigger "PR checks"; the default token does not
+          GH_TOKEN: ${{ secrets.CI_PAT || github.token }}
+          GOOD: ${{ steps.refs.outputs.good }}
+          BAD: ${{ steps.refs.outputs.bad }}
+        run: |
+          # Every environment follows master
+          BRANCH=master
+          git rev-parse -q --verify "origin/$BRANCH" >/dev/null || BRANCH=main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "revert/${{ inputs.environment }}-${{ github.run_id }}" "origin/$BRANCH"
+          # Restore every metadata file that differs between bad and good to its good version
+          git diff --name-only "$BAD" "$GOOD" -- force-app | while read -r f; do
+            if git cat-file -e "$GOOD:$f" 2>/dev/null; then git checkout "$GOOD" -- "$f"; else git rm -q --ignore-unmatch -- "$f"; fi
+          done
+          if git diff --cached --quiet; then echo "Branch already matches the good state"; exit 0; fi
+          git commit -q -m "Revert ${{ inputs.environment }} to ${GOOD:0:7} (rollback run ${{ github.run_id }})"
+          git push -u origin HEAD
+          gh pr create --base "$BRANCH" --head "$(git branch --show-current)" --label rollback \
+            --title "Rollback ${{ inputs.environment }} to ${GOOD:0:7}" \
+            --body "Restores force-app to the state of \`$GOOD\` after rolling back **${{ inputs.environment }}** from \`$BAD\`. Merge this so git matches the org again. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            || gh pr create --base "$BRANCH" --head "$(git branch --show-current)" \
+            --title "Rollback ${{ inputs.environment }} to ${GOOD:0:7}" --body "See run ${{ github.run_id }}"

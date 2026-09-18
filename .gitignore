@@ -1,0 +1,9 @@
+.sf/
+.sfdx/
+.vscode/
+node_modules/
+delta/
+rollback-delta/
+*.log
+.env
+auth.txt

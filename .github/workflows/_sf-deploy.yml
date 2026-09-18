@@ -1,0 +1,157 @@
+# =============================================================================
+# Reusable workflow: validate or deploy a git delta to one Salesforce org.
+#
+# Called by pr-validate.yml (optional CLI validation) and deploy-on-merge.yml
+# (DEPLOY_ENGINE = sf). Not used when Gearset does the deployments.
+# The target org is identified by a GitHub *Environment* whose secret
+# SFDX_AUTH_URL authenticates the CI user. Environment names used here:
+#   partial | uat | production-validate | production
+#
+# After a successful *deploy* the tag deployed/<environment> is moved to the
+# deployed commit. The next deploy uses that tag as its "from" ref, so a failed
+# run is never silently skipped by the following one.
+# =============================================================================
+name: _sf-deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment (partial | uat | production-validate | production)
+        type: string
+        required: true
+      mode:
+        description: validate | deploy
+        type: string
+        default: deploy
+      from_ref:
+        description: Base git ref for the delta. Empty = tag deployed/<environment>, else the push "before" sha.
+        type: string
+        default: ""
+      to_ref:
+        description: Target git ref for the delta (what gets deployed)
+        type: string
+        required: true
+      checkout_ref:
+        description: Ref to check out (defaults to to_ref)
+        type: string
+        default: ""
+      test_level:
+        description: NoTestRun | RunLocalTests | RunAllTestsInOrg | RunSpecifiedTests
+        type: string
+        default: RunLocalTests
+      merge_base:
+        description: Use merge-base (three-dot) diff. Use for PRs.
+        type: boolean
+        default: false
+      wait_minutes:
+        type: number
+        default: 90
+    outputs:
+      has_changes:
+        value: ${{ jobs.run.outputs.has_changes }}
+      status:
+        value: ${{ jobs.run.outputs.status }}
+      job_id:
+        value: ${{ jobs.run.outputs.job_id }}
+
+jobs:
+  run:
+    name: ${{ inputs.mode }} -> ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: write        # to move the deployed/<env> tag
+    concurrency:
+      group: sf-${{ inputs.environment }}-${{ inputs.mode }}
+      cancel-in-progress: false
+    env:
+      SF_DISABLE_TELEMETRY: "true"
+      SF_AUTOUPDATE_DISABLE: "true"
+    outputs:
+      has_changes: ${{ steps.delta.outputs.has_changes }}
+      status: ${{ steps.deploy.outputs.status }}
+      job_id: ${{ steps.deploy.outputs.job_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.checkout_ref || inputs.to_ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Salesforce CLI and sfdx-git-delta
+        run: |
+          npm install -g "@salesforce/cli@${{ vars.SF_CLI_VERSION || 'latest' }}"
+          echo y | sf plugins install "sfdx-git-delta@${{ vars.SGD_VERSION || 'latest' }}"
+          sf version --verbose
+
+      - name: Authenticate to ${{ inputs.environment }}
+        env:
+          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+        run: |
+          if [ -z "$SFDX_AUTH_URL" ]; then
+            echo "::error::Secret SFDX_AUTH_URL is not set on GitHub Environment '${{ inputs.environment }}'"
+            exit 1
+          fi
+          printf '%s' "$SFDX_AUTH_URL" > "$RUNNER_TEMP/auth.txt"
+          sf org login sfdx-url --sfdx-url-file "$RUNNER_TEMP/auth.txt" --alias target --set-default
+          rm -f "$RUNNER_TEMP/auth.txt"
+          sf org display --target-org target
+
+      - name: Resolve "from" ref
+        id: from
+        run: |
+          FROM="${{ inputs.from_ref }}"
+          TAG="refs/tags/deployed/${{ inputs.environment }}"
+          if [ -z "$FROM" ]; then
+            if git rev-parse -q --verify "$TAG^{commit}" >/dev/null; then
+              FROM="$TAG"; echo "Using deployment marker $TAG ($(git rev-parse --short "$TAG"))"
+            elif [ -n "${{ github.event.before }}" ]; then
+              FROM="${{ github.event.before }}"; echo "No deployment marker yet; using push 'before' sha"
+            else
+              FROM="HEAD~1"; echo "No deployment marker or push context; using HEAD~1"
+            fi
+          fi
+          echo "ref=$FROM" >> "$GITHUB_OUTPUT"
+
+      - name: Compute delta
+        id: delta
+        run: |
+          bash scripts/sf-delta.sh \
+            --from "${{ steps.from.outputs.ref }}" \
+            --to "${{ inputs.to_ref }}" \
+            ${{ inputs.merge_base && '--merge-base' || '' }}
+
+      - name: Upload delta package
+        if: steps.delta.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: delta-${{ inputs.environment }}-${{ inputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: delta
+          retention-days: 30
+
+      - name: ${{ inputs.mode }}
+        id: deploy
+        if: steps.delta.outputs.has_changes == 'true'
+        run: |
+          bash scripts/sf-deploy.sh \
+            --org target \
+            --mode "${{ inputs.mode }}" \
+            --delta delta \
+            --test-level "${{ inputs.test_level }}" \
+            --wait "${{ inputs.wait_minutes }}"
+
+      - name: Nothing to do
+        if: steps.delta.outputs.has_changes != 'true'
+        run: echo "### Nothing to ${{ inputs.mode }} - no metadata changed between the refs" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Move deployment marker deployed/${{ inputs.environment }}
+        if: inputs.mode == 'deploy'
+        run: |
+          git tag -f "deployed/${{ inputs.environment }}" "${{ inputs.to_ref }}"
+          git push -f origin "refs/tags/deployed/${{ inputs.environment }}"
+          echo "Marker deployed/${{ inputs.environment }} -> $(git rev-parse --short "${{ inputs.to_ref }}")"
