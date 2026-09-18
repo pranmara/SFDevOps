@@ -183,3 +183,13 @@ Defects found and fixed in the scripts:
 
 - Added `tests/run-tests.sh` and `docs/06-running-the-scripts.md` (environment requirements, per-script and workflow pitfalls, test coverage, what is not covered).
 - Edited `scripts/create-pr.sh`, `scripts/sf-deploy.sh`, `docs/05-scripts-reference.md`, `README.md`.
+
+## 13. Seventh request: repository branch renamed back to `master`
+
+The user renamed the GitHub branch from `main` to `master` and asked for the docs to be updated and committed.
+
+- Remote state found: `master` at `857d2b1` (before the script fixes) and `main` still at `ab0ec13` (with them). Pushing the local history to `master` was a fast-forward; no force push.
+- Local branch renamed `main` -> `master`, tracking `origin/master`; `origin/HEAD` set to `master`.
+- Docs updated: `docs/05-scripts-reference.md` (default target is `master` here) and `docs/06-running-the-scripts.md` (target detection, force-push note, rollback note, workflow note, bug list). All other docs already said `master`. Workflows keep triggering on both names; `create-pr.sh` detects the default branch, so no script change was needed.
+- `tests/run-tests.sh` fixture switched to `master` and re-run.
+- The stale `main` branch on GitHub was left in place for the user to delete; every commit on it is contained in `master`.

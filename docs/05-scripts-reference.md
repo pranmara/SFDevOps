@@ -27,7 +27,7 @@ scripts/create-pr.sh -m "Lead routing flow" -o partial \
   -r "Flow:Lead_Router" -r "CustomField:Lead.Region__c" -l flow
 ```
 
-**Inputs.** `--title` (required), `--target` (default: origin's default branch, `main` here, or `DEFAULT_TARGET`), `--branch` (default `feature/<slug-of-title>`), one or more `--path`, `--retrieve`, `--manifest`, `--source-org` (or `SF_SOURCE_ORG`), `--body`/`--body-file`, `--label`, `--reviewer`, `--draft`, `--dry-run`.
+**Inputs.** `--title` (required), `--target` (default: origin's default branch, `master` here, or `DEFAULT_TARGET`), `--branch` (default `feature/<slug-of-title>`), one or more `--path`, `--retrieve`, `--manifest`, `--source-org` (or `SF_SOURCE_ORG`), `--body`/`--body-file`, `--label`, `--reviewer`, `--draft`, `--dry-run`.
 
 **What it changes**
 

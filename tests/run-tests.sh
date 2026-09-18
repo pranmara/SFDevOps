@@ -104,13 +104,13 @@ git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/work" 2>/dev/null
 cd "$T/work"
 git config user.name test; git config user.email test@example.com
-git switch -q -c main
+git switch -q -c master
 mkdir -p force-app/main/default/classes
 cp "$REPO/sfdx-project.json" .
 echo 'public class Foo { }' > force-app/main/default/classes/Foo.cls
 echo '<ApexClass><apiVersion>62.0</apiVersion></ApexClass>' > force-app/main/default/classes/Foo.cls-meta.xml
-git add -A && git commit -q -m "initial" && git push -q -u origin main
-git remote set-head origin main
+git add -A && git commit -q -m "initial" && git push -q -u origin master
+git remote set-head origin master
 
 echo "=== create-pr.sh"
 echo 'public class Foo { public static Integer one() { return 1; } }' > force-app/main/default/classes/Foo.cls
@@ -122,7 +122,7 @@ assert_contains "$OUT" "pull/42" "path mode prints the PR URL"
 assert_eq "$(git branch --show-current)" "feature/fix-foo" "branch name derived from title"
 assert_contains "$(git show --stat HEAD)" "Baz.cls-meta.xml" "meta.xml companion committed automatically (only .cls was passed)"
 assert_contains "$(git ls-remote origin feature/fix-foo)" "feature/fix-foo" "branch pushed to origin"
-assert_contains "$(cat "$T/gh-args.txt")" "pr create --base main --head feature/fix-foo --title Fix foo" "target auto-detected as origin default branch (main)"
+assert_contains "$(cat "$T/gh-args.txt")" "pr create --base master --head feature/fix-foo --title Fix foo" "target auto-detected as origin default branch (master)"
 assert_contains "$(cat "$T/gh-args.txt")" "--label bug" "label passed to gh"
 
 echo "https://github.com/pranmara/SFDevOps/pull/7" > "$T/existing_pr"; : > "$T/gh-args.txt"
@@ -133,38 +133,38 @@ assert_contains "$OUT" "already exists" "existing PR reused"
 assert_not_contains "$(cat "$T/gh-args.txt")" "pr create" "no duplicate PR created"
 rm -f "$T/existing_pr"
 
-git switch -q main
+git switch -q master
 OUT="$(bash "$REPO/scripts/create-pr.sh" -m "Lead flow" -o partial -r "Flow:Lead_Router" 2>&1)"; RC=$?
 assert_eq "$RC" 0 "retrieve mode exits 0"
 assert_contains "$(cat "$T/sf-args.txt")" "project retrieve start --metadata Flow:Lead_Router --target-org partial" "sf retrieve called with the spec and org"
 assert_contains "$(git show --stat HEAD)" "Lead_Router.flow-meta.xml" "retrieved flow committed"
 
-git switch -q main
+git switch -q master
 OUT="$(bash "$REPO/scripts/create-pr.sh" -m "Nothing here" -p force-app/main/default/classes/Foo.cls 2>&1)"; RC=$?
 assert_eq "$RC" 1 "no-change run exits 1"
 assert_contains "$OUT" "No changes to commit" "no-change message"
-assert_eq "$(git branch --show-current)" "main" "returned to original branch after failure"
+assert_eq "$(git branch --show-current)" "master" "returned to original branch after failure"
 assert_eq "$(git branch --list feature/nothing-here | wc -l | tr -d ' ')" "0" "empty feature branch cleaned up"
 
 OUT="$(bash "$REPO/scripts/create-pr.sh" -m "Bad path" -p force-app/nope.cls 2>&1)"; RC=$?
 assert_eq "$RC" 1 "missing path exits 1"
 assert_contains "$OUT" "Path does not exist" "missing path message"
-assert_eq "$(git branch --show-current)" "main" "cleanup after missing path"
+assert_eq "$(git branch --show-current)" "master" "cleanup after missing path"
 
 echo 'public class Foo { public static Integer three() { return 3; } }' > force-app/main/default/classes/Foo.cls
 OUT="$(bash "$REPO/scripts/create-pr.sh" -m "Dry run" -p force-app/main/default/classes/Foo.cls --dry-run 2>&1)"; RC=$?
 assert_eq "$RC" 0 "dry-run exits 0"
 assert_eq "$(git ls-remote origin feature/dry-run | wc -l | tr -d ' ')" "0" "dry-run does not push"
-git switch -q main
+git switch -q master
 
-OUT="$(bash "$REPO/scripts/create-pr.sh" -m "x" -p force-app -b main 2>&1)"; RC=$?
+OUT="$(bash "$REPO/scripts/create-pr.sh" -m "x" -p force-app -b master 2>&1)"; RC=$?
 assert_contains "$OUT" "Refusing to commit directly to protected branch" "protected branch guard"
 
 OUT="$(bash "$REPO/scripts/create-pr.sh" -m "x" -p force-app -t nope 2>&1)"; RC=$?
 assert_contains "$OUT" "does not exist on origin" "unknown target branch reported"
 
 echo "=== sf-delta.sh"
-git switch -q main
+git switch -q master
 git merge -q --no-ff feature/fix-foo -m "merge fix" 2>/dev/null
 echo 'public class Bar { }' > force-app/main/default/classes/Bar.cls
 echo '<ApexClass/>' > force-app/main/default/classes/Bar.cls-meta.xml

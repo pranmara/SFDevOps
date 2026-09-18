@@ -17,7 +17,7 @@
 
 ### `create-pr.sh`
 
-- **Target branch.** The default is origin's default branch (`main` in this repository). The old `master` default would have failed here. Pass `-t` or set `DEFAULT_TARGET` to override. If detection fails (`Could not detect origin's default branch`), run `git remote set-head origin --auto` once.
+- **Target branch.** The default is origin's default branch (`master` in this repository), detected from the remote rather than hard-coded, so a rename to `main` would not break it. Pass `-t` or set `DEFAULT_TARGET` to override. If detection fails (`Could not detect origin's default branch`), run `git remote set-head origin --auto` once.
 - **Unrelated local changes travel with you.** The script creates the feature branch from `origin/<target>` with `git switch -c`, which carries uncommitted changes across. Only the paths you pass are staged, so unrelated edits stay uncommitted on the new branch. If they conflict with the target branch, branch creation fails with `Could not create branch`; commit or stash them first.
 - **Retrieve mode without `--path` stages everything under `force-app/`**, including unrelated uncommitted edits. Stash them first, or pass explicit `--path` values alongside `--retrieve`.
 - **Retrieve overwrites local files** with the org's version (`--ignore-conflicts`). Local, uncommitted edits to the same components are lost.
@@ -28,7 +28,7 @@
 
 ### `sf-delta.sh`
 
-- **`--from` must exist.** An all-zero sha (first push to a branch) or a commit lost to a force push falls back to `<to>~1`, which covers only the last commit. After a force push to `main`, run the deployment with `from_ref` set explicitly.
+- **`--from` must exist.** An all-zero sha (first push to a branch) or a commit lost to a force push falls back to `<to>~1`, which covers only the last commit. After a force push to `master`, run the deployment with `from_ref` set explicitly.
 - **Renames** appear as a deletion plus an addition. The deletion is subject to `.sgdignore-destructive`.
 - **Unknown metadata types** produce warnings from sfdx-git-delta and are left out of `package.xml`. Add them with `--additional-metadata-registry` if you use uncommon types.
 - **`has_changes=false` is a valid outcome** (docs-only PRs); the workflows skip deployment rather than fail.
@@ -54,13 +54,13 @@
 
 - **Leaves you on a detached HEAD** at the good commit when run locally; `git switch -` returns. In a workflow the runner is discarded.
 - **Deletes components** the bad commit added, unless `.sgdignore-destructive` filters them. Always run with `--validate-only` first and read `rollback-delta/destructiveChanges/destructiveChanges.xml`.
-- **Git and org diverge after a rollback** until the revert PR that `rollback.yml` opens is merged, or the tag is moved. The next merge to `main` re-applies the bad change otherwise.
+- **Git and org diverge after a rollback** until the revert PR that `rollback.yml` opens is merged, or the tag is moved. The next merge to `master` re-applies the bad change otherwise.
 - Cannot undo data changes, Flow activation state, picklist deactivations, or Setup settings excluded from git (see `docs/03`).
 
 ## 6.3 Workflow-level pitfalls
 
 - `deploy-on-merge.yml` **does nothing** until `DEPLOY_ENGINE` is set to `gearset-api` or `sf`. In the default `gearset-auto` mode Gearset's own webhook runs the jobs.
-- The repository branch is **`main`**; the Gearset CI jobs must watch `main`. The workflows trigger on both `main` and `master`.
+- The repository branch is **`master`**; the Gearset CI jobs must watch `master`. The workflows trigger on both `master` and `main`, so a future rename needs no workflow change.
 - PRs and revert PRs created with the default `GITHUB_TOKEN` **do not trigger workflows**. `rollback.yml` needs the `CI_PAT` secret for its revert PR to get `PR checks`.
 - `deployed/<env>` tags must be bootstrapped (`docs/04` section 4.6) before the `sf` engine or the `Rollback` workflow is used; without them the delta falls back to the push's previous commit.
 - The `production` GitHub Environment should have required reviewers; the `production-validate` environment must not, or PR validations would wait for approval.
@@ -86,7 +86,7 @@ What the 64 checks cover:
 
 Bugs the harness found and that were fixed:
 
-1. `create-pr.sh` defaulted to `master`; this repository uses `main`. It now detects origin's default branch.
+1. `create-pr.sh` hard-coded `master` as the PR target, which broke while the repository briefly used `main`. It now detects origin's default branch, so it works with either name.
 2. `create-pr.sh` skipped its cleanup when it failed through its own `die` calls (an `ERR` trap does not fire on `exit`), leaving you on an empty feature branch. Cleanup moved to an `EXIT` trap.
 3. On Windows, jq emits CRLF. `mapfile` in `create-pr.sh` kept the carriage return and git rejected the package directory path (`pathspec 'force-app?' did not match`). The `read` loops in `sf-deploy.sh` had the same exposure. Both now strip carriage returns.
 
