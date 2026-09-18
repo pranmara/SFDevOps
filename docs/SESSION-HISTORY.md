@@ -150,3 +150,13 @@ sfdx-project.json  .forceignore  .sgdignore  .sgdignore-destructive  .gitignore
 ## 10. Fourth request
 
 The user asked to record the previous exchange in this session history. Section 9 was completed with the verification results, the points reported to the user and the current file set; this section was added. No other files changed.
+
+## 11. Fifth request: push to GitHub
+
+The user provided the repository URL `https://github.com/pranmara/SFDevOps.git`.
+
+- The remote already had one commit ("Initial commit", a one-line `README.md`) on branch `main`. No local git identity was configured.
+- The working directory was initialised as a git repository on `main` with a repo-local identity (the user's name and e-mail), the remote added, and the local branch based on `origin/main` so history was preserved without a force push.
+- All 24 files were committed on top of the initial commit (the remote README was replaced by the pipeline README) and pushed: `28ae6ec..2630747 main -> main`.
+- Git printed CRLF warnings for every file because `core.autocrlf=true` is set on the machine. A `.gitattributes` forcing LF for scripts, YAML, JSON, Markdown and Salesforce metadata was added in a follow-up commit so the Bash scripts keep working in Git Bash and on Linux runners.
+- Note for the docs: the remote branch is `main`, while the documentation refers to `master`. The workflows trigger on both names; the Gearset CI jobs must point at the branch actually in use.

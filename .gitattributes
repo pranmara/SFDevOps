@@ -1,0 +1,32 @@
+# Keep LF line endings for everything the pipeline executes or parses,
+# regardless of core.autocrlf on Windows machines. CRLF breaks Bash scripts
+# on Linux runners and in Git Bash.
+*.sh            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+.forceignore    text eol=lf
+.sgdignore      text eol=lf
+.sgdignore-destructive text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+CODEOWNERS      text eol=lf
+
+# Salesforce metadata: treat as text with LF so diffs and deltas are stable
+*.xml           text eol=lf
+*.cls           text eol=lf
+*.trigger       text eol=lf
+*.js            text eol=lf
+*.html          text eol=lf
+*.css           text eol=lf
+*.page          text eol=lf
+*.cmp           text eol=lf
+
+# Binary metadata
+*.resource      binary
+*.zip           binary
+*.png           binary
+*.jpg           binary
+*.gif           binary
+*.pdf           binary
