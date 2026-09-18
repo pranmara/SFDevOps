@@ -160,3 +160,26 @@ The user provided the repository URL `https://github.com/pranmara/SFDevOps.git`.
 - All 24 files were committed on top of the initial commit (the remote README was replaced by the pipeline README) and pushed: `28ae6ec..2630747 main -> main`.
 - Git printed CRLF warnings for every file because `core.autocrlf=true` is set on the machine. A `.gitattributes` forcing LF for scripts, YAML, JSON, Markdown and Salesforce metadata was added in a follow-up commit so the Bash scripts keep working in Git Bash and on Linux runners.
 - Note for the docs: the remote branch is `main`, while the documentation refers to `master`. The workflows trigger on both names; the Gearset CI jobs must point at the branch actually in use.
+
+## 12. Sixth request: pitfalls and script testing
+
+The user asked what could break the scripts and for the scripts to be tested and validated.
+
+### Testing approach
+
+`gh`, `sf` and real orgs are not available on the machine, so an offline harness was built: stub `gh`, `sf` and `curl` commands that record their arguments and emulate responses (including sfdx-git-delta output derived from `git diff`, Salesforce CLI success/failure/garbage JSON, and the Gearset API state machine), plus a throwaway git repository with a bare `origin`. The harness was first run from the scratchpad, then added to the repository as `tests/run-tests.sh`.
+
+### Results
+
+First run: 57 passed, 7 failed. Analysis: 3 harness mistakes (regex escapes with fixed-string matching; a companion-file check on an unchanged file) and 3 real defects. Final run: **64 passed, 0 failed**.
+
+Defects found and fixed in the scripts:
+
+1. `create-pr.sh` defaulted the PR target to `master`; the repository uses `main`. It now detects origin's default branch (`git symbolic-ref refs/remotes/origin/HEAD`, with `git remote set-head origin --auto` as fallback).
+2. `create-pr.sh` did not clean up (return to the original branch, delete the empty feature branch) when it failed through its own `die` calls, because an `ERR` trap does not fire on `exit`. Cleanup moved to an `EXIT` trap.
+3. On Windows, jq emits CRLF. `mapfile` in `create-pr.sh` kept the carriage return, so `git add -- force-app<CR>` failed with `pathspec 'force-app?' did not match`. The `read` loops in `sf-deploy.sh` had the same exposure. Carriage returns are now stripped.
+
+### Files added or changed
+
+- Added `tests/run-tests.sh` and `docs/06-running-the-scripts.md` (environment requirements, per-script and workflow pitfalls, test coverage, what is not covered).
+- Edited `scripts/create-pr.sh`, `scripts/sf-deploy.sh`, `docs/05-scripts-reference.md`, `README.md`.

@@ -27,7 +27,7 @@ scripts/create-pr.sh -m "Lead routing flow" -o partial \
   -r "Flow:Lead_Router" -r "CustomField:Lead.Region__c" -l flow
 ```
 
-**Inputs.** `--title` (required), `--target` (default `master`, or `DEFAULT_TARGET`), `--branch` (default `feature/<slug-of-title>`), one or more `--path`, `--retrieve`, `--manifest`, `--source-org` (or `SF_SOURCE_ORG`), `--body`/`--body-file`, `--label`, `--reviewer`, `--draft`, `--dry-run`.
+**Inputs.** `--title` (required), `--target` (default: origin's default branch, `main` here, or `DEFAULT_TARGET`), `--branch` (default `feature/<slug-of-title>`), one or more `--path`, `--retrieve`, `--manifest`, `--source-org` (or `SF_SOURCE_ORG`), `--body`/`--body-file`, `--label`, `--reviewer`, `--draft`, `--dry-run`.
 
 **What it changes**
 
@@ -42,7 +42,9 @@ scripts/create-pr.sh -m "Lead routing flow" -o partial \
 
 **Guard rails.** Refuses `master` or `main` as the feature branch. Requires `git` and `gh` (authenticated), and `sf` only when retrieving. Aborts with "No changes to commit" when the staged metadata equals `master`.
 
-**On failure.** The `ERR` trap prints the failing line and command. If the branch was created by the script and nothing was committed, it switches back to your original branch and deletes the new branch. If a commit exists, it keeps the branch and prints the push and PR command to retry by hand.
+**On failure.** The `ERR` trap prints the failing line and command; an `EXIT` trap then runs the cleanup for every non-zero exit, including the script's own validation errors. If the branch was created by the script and nothing was committed, it switches back to your original branch and deletes the new branch. If a commit exists, it keeps the branch and prints the push and PR command to retry by hand.
+
+**Tested by** `tests/run-tests.sh` (see `docs/06-running-the-scripts.md`).
 
 ---
 

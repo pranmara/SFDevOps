@@ -28,7 +28,7 @@ set -Eeuo pipefail
 # --------------------------------------------------------------------------- #
 # Defaults (override via flags or environment)
 # --------------------------------------------------------------------------- #
-TARGET="${DEFAULT_TARGET:-master}"       # base branch for the PR
+TARGET="${DEFAULT_TARGET:-}"             # base branch for the PR; empty = origin's default branch
 SOURCE_ORG="${SF_SOURCE_ORG:-}"           # sf alias to retrieve from
 BRANCH=""
 TITLE=""
@@ -48,7 +48,7 @@ Usage: scripts/create-pr.sh -m "Title" [-t master] [-p PATH ...] [-r Type:Name .
 
 Options
   -m, --title TEXT        PR title and commit subject (required)
-  -t, --target BRANCH     Base branch for the PR (default: ${TARGET})
+  -t, --target BRANCH     Base branch for the PR (default: origin's default branch, or \$DEFAULT_TARGET)
   -b, --branch NAME       Feature branch name (default: feature/<slug-of-title>)
   -p, --path PATH         Metadata file/dir to include (repeatable). *-meta.xml
                           companions are added automatically.
@@ -113,6 +113,16 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Not inside a gi
 cd "$REPO_ROOT"
 ORIGINAL_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
+# Default target = the remote's default branch (main or master), detected once
+if [[ -z "$TARGET" ]]; then
+  TARGET="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
+  if [[ -z "$TARGET" ]]; then
+    git remote set-head origin --auto >/dev/null 2>&1 || true
+    TARGET="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
+  fi
+  [[ -n "$TARGET" ]] || die "Could not detect origin's default branch. Pass --target or set DEFAULT_TARGET."
+fi
+
 # Slug the title into a branch name when none is supplied
 if [[ -z "$BRANCH" ]]; then
   slug="$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-50)"
@@ -129,21 +139,23 @@ esac
 # --------------------------------------------------------------------------- #
 CREATED_BRANCH=false
 COMMITTED=false
-on_error() {
-  local rc=$? line=$1
-  echo
-  printf '\033[1;31mFailed\033[0m at line %s (exit %s): %s\n' "$line" "$rc" "$BASH_COMMAND" >&2
+# ERR fires for unexpected command failures; EXIT runs for every non-zero exit,
+# including our own die() calls, so cleanup always happens.
+trap 'printf "\n\033[1;31mFailed\033[0m at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
+cleanup() {
+  local rc=$?
+  [[ $rc -eq 0 ]] && return 0
   if $CREATED_BRANCH && ! $COMMITTED; then
     warn "Branch '$BRANCH' was created but nothing was committed. Cleaning up."
-    git switch -q "$ORIGINAL_BRANCH" 2>/dev/null || true
+    git switch -q "$ORIGINAL_BRANCH" 2>/dev/null || git switch -q -f "$ORIGINAL_BRANCH" 2>/dev/null || true
     git branch -D "$BRANCH" >/dev/null 2>&1 || true
   elif $COMMITTED; then
     warn "Commit exists on '$BRANCH'. To retry the push + PR step run:"
     warn "  git push -u origin $BRANCH && gh pr create --base $TARGET --head $BRANCH --title \"$TITLE\""
   fi
-  exit "$rc"
+  return 0
 }
-trap 'on_error $LINENO' ERR
+trap cleanup EXIT
 
 # --------------------------------------------------------------------------- #
 # 1. Sync the target branch and create / switch to the feature branch
@@ -192,7 +204,8 @@ if [[ ${#PATHS[@]} -gt 0 ]]; then
 else
   # Retrieval mode with no explicit paths: stage everything the retrieve touched
   # inside the package directories declared in sfdx-project.json.
-  mapfile -t pkg_dirs < <(jq -r '.packageDirectories[].path' sfdx-project.json 2>/dev/null || echo force-app)
+  # tr strips the CR that jq emits on Windows; mapfile would otherwise keep it
+  mapfile -t pkg_dirs < <( (jq -r '.packageDirectories[].path' sfdx-project.json 2>/dev/null || echo force-app) | tr -d '\r')
   git add -A -- "${pkg_dirs[@]}"
 fi
 

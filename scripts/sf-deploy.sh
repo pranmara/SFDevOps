@@ -110,7 +110,7 @@ summary "### :x: $MODE -> \`$ORG\` failed (status: $STATUS, job: \`${JOB:-n/a}\`
 echo "$RAW" | jq -r '
   (.result.details.componentFailures // []) | if type=="array" then . else [.] end
   | .[] | "COMPONENT|\(.componentType // "?")|\(.fullName // "?")|\(.problem // "?")|\(.lineNumber // "")"' 2>/dev/null \
-  | while IFS='|' read -r _ ctype cname problem line; do
+  | tr -d '\r' | while IFS='|' read -r _ ctype cname problem line; do
       echo "::error::[$ctype] $cname${line:+ (line $line)}: $problem"
       summary "- :red_circle: **$ctype** \`$cname\`${line:+ line $line}: $problem"
     done
@@ -118,7 +118,7 @@ echo "$RAW" | jq -r '
 echo "$RAW" | jq -r '
   (.result.details.runTestResult.failures // []) | if type=="array" then . else [.] end
   | .[] | "TEST|\(.name // "?")|\(.methodName // "?")|\(.message // "?")"' 2>/dev/null \
-  | while IFS='|' read -r _ cls meth msg; do
+  | tr -d '\r' | while IFS='|' read -r _ cls meth msg; do
       echo "::error::Test failed $cls.$meth: $msg"
       summary "- :test_tube: **$cls.$meth**: $msg"
     done
@@ -126,7 +126,7 @@ echo "$RAW" | jq -r '
 echo "$RAW" | jq -r '
   (.result.details.runTestResult.codeCoverageWarnings // []) | if type=="array" then . else [.] end
   | .[] | "\(.name // "org") \(.message // "")"' 2>/dev/null \
-  | while read -r line; do
+  | tr -d '\r' | while read -r line; do
       if [[ -n "$line" ]]; then echo "::warning::Coverage: $line"; summary "- :warning: Coverage: $line"; fi
     done
 

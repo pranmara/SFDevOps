@@ -9,6 +9,7 @@ Automation for **Partial sandbox, UAT and Production**, one GitHub repository in
 | Error handling and rollback runbook | `docs/03-error-handling-and-rollback.md` |
 | Step-by-step setup: Gearset jobs, secrets, variables, branch protection, markers | `docs/04-setup-guide.md` |
 | What each script does and what it changes (git, org, GitHub, Gearset) | `docs/05-scripts-reference.md` |
+| What can break the scripts, and how they were tested (`tests/run-tests.sh`) | `docs/06-running-the-scripts.md` |
 | History of the sessions that produced this repo | `docs/SESSION-HISTORY.md` |
 | PR creation script | `scripts/create-pr.sh` |
 
@@ -45,7 +46,9 @@ scripts/
   sf-deploy.sh           validate / deploy / quick-deploy with parsed component and test failures
   gearset-run.sh         start a Gearset CI job via the Automation API and wait for it
   rollback.sh            build and deploy the reverse delta
-sfdx-project.json, .forceignore, .sgdignore, .sgdignore-destructive
+tests/
+  run-tests.sh           offline harness with stub gh/sf/curl: 64 checks across the five scripts
+sfdx-project.json, .forceignore, .sgdignore, .sgdignore-destructive, .gitattributes
 .github/CODEOWNERS, .github/pull_request_template.md
 ```
 
