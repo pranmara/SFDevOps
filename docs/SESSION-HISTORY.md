@@ -192,4 +192,4 @@ The user renamed the GitHub branch from `main` to `master` and asked for the doc
 - Local branch renamed `main` -> `master`, tracking `origin/master`; `origin/HEAD` set to `master`.
 - Docs updated: `docs/05-scripts-reference.md` (default target is `master` here) and `docs/06-running-the-scripts.md` (target detection, force-push note, rollback note, workflow note, bug list). All other docs already said `master`. Workflows keep triggering on both names; `create-pr.sh` detects the default branch, so no script change was needed.
 - `tests/run-tests.sh` fixture switched to `master` and re-run.
-- The stale `main` branch on GitHub was left in place for the user to delete; every commit on it is contained in `master`.
+- The stale `main` branch on GitHub was deleted after the user confirmed, once `git merge-base --is-ancestor` verified every commit on it was contained in `master`. `master` is now the only remote branch.
